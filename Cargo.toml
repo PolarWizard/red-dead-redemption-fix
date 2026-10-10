@@ -1,0 +1,26 @@
+[package]
+name = "red-dead-redemption-fix"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+grapnel = "0.1.2"
+memchr = "2.8.3"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.5"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+] }
+
+# The signature scan runs in DllMain, once per signature; an optimized memchr
+# keeps it fast in debug builds too.
+[profile.dev.package.memchr]
+opt-level = 3
