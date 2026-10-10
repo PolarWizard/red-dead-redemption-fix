@@ -1,5 +1,6 @@
-//! The Flash movies of the HUD: which movie is running, where the player puts
-//! its stage on screen, and which aspect ratio its scripts are told.
+//! The Flash movies, the HUD and the menus: which movie is running, where the
+//! player puts its stage on screen, and which aspect ratio its scripts are
+//! told.
 
 use std::cell::Cell;
 use std::sync::Mutex;
@@ -12,10 +13,15 @@ use crate::utils::{
     ModuleInfo, SignatureHook, detour_at, find, hook_at, log, log_error, log_warn, read, readable, rip_target, write,
 };
 
-/// The HUD movies, drawn into the centered region. Every other movie keeps
-/// the full screen. A name matches without regard to case, on its own or with
-/// the `_z` suffix of its Undead Nightmare variant.
-const HUD_MOVIES: [&str; 3] = ["mp_HUD", "popup", "numberSystem"];
+/// Movies that keep the full screen. Every other movie with a 16:9 stage is
+/// drawn into the centered region. A name matches without regard to case, on
+/// its own or with the `_z` suffix of its Undead Nightmare variant.
+///
+/// `fader` and `effects` cover the whole screen. `mapRenderProxy` draws over
+/// the pause map, which the engine draws across the full screen
+/// (`FUN_140600f20`). `multiplayerIcons` places tags over players from their
+/// screen positions (`FUN_1404c6560`).
+const FULL_SCREEN_MOVIES: [&str; 4] = ["fader", "effects", "mapRenderProxy", "multiplayerIcons"];
 
 /// `wrapper+0x8` points at the movie's definition. `FUN_1401190d0` registers
 /// `*(wrapper+8) + 0x28` as the movie's lookup name, and `FUN_14011a8f0`
@@ -43,14 +49,15 @@ const SWF_STAGE_HEIGHT: usize = 0x48;
 const ROOT_CONTEXT: usize = 0x20;
 const CONTEXT_TX: usize = 0x38;
 
-/// The movie wrapper whose update or draw runs on this thread.
+/// The movie wrapper whose load, update or draw runs on this thread.
 #[derive(Clone, Copy)]
 struct Current {
-    /// `this` of `FUN_140115660` or `FUN_1401157d0`; 0 outside both.
+    /// `this` of `FUN_140114d80`, `FUN_140115660` or `FUN_1401157d0`; 0
+    /// outside all three.
     wrapper: usize,
     /// The wrapper's definition, the key of [`MOVIES`].
     definition: usize,
-    /// Whether the movie is on [`HUD_MOVIES`].
+    /// Whether the movie is not on [`FULL_SCREEN_MOVIES`].
     centered: bool,
     /// Where [`place_movie`] put the movie, while it is drawn.
     layout: Option<Layout>,
@@ -82,17 +89,19 @@ struct Movie {
 
 static MOVIES: Mutex<Vec<Movie>> = Mutex::new(Vec::new());
 
-/// Original `FUN_140115660` (update) and `FUN_1401157d0` (draw), reached
-/// through grapnel's trampolines.
+/// Original `FUN_140114d80` (load), `FUN_140115660` (update) and
+/// `FUN_1401157d0` (draw), reached through grapnel's trampolines.
+static LOAD: AtomicUsize = AtomicUsize::new(0);
 static UPDATE: AtomicUsize = AtomicUsize::new(0);
 static DRAW: AtomicUsize = AtomicUsize::new(0);
 
 static ASPECT_OUTSIDE_LOGGED: AtomicBool = AtomicBool::new(false);
 
+type LoadFn = unsafe extern "system" fn(usize, u32) -> u64;
 type WrapperFn = unsafe extern "system" fn(usize);
 
-/// Draws the HUD movies into a centered 16:9 region and tells their scripts
-/// the screen is 16:9.
+/// Draws the HUD and the menus into a centered 16:9 region and tells their
+/// scripts the screen is 16:9.
 ///
 /// # How it was found
 ///
@@ -139,9 +148,11 @@ type WrapperFn = unsafe extern "system" fn(usize);
 /// MOV   dword ptr [RBX+0x10],0x4  ; tag the variable as a float
 /// ```
 ///
-/// Every movie wrapper updates its swf, which runs its scripts, in
-/// `FUN_140115660`, and draws it in `FUN_1401157d0` (vtable slots +0x18 and
-/// +0x28 of all 36 wrapper classes). Both take only `this` in RCX.
+/// Every movie wrapper loads its swf in `FUN_140114d80`, updates it, which
+/// runs its scripts, in `FUN_140115660`, and draws it in `FUN_1401157d0`
+/// (vtable slots +0x8, +0x18 and +0x28 of all 36 wrapper classes). The
+/// update and the draw take only `this` in RCX; the load also takes an
+/// integer in EDX (`MOV ESI,EDX`).
 ///
 /// # Why it works
 ///
@@ -158,16 +169,18 @@ type WrapperFn = unsafe extern "system" fn(usize);
 /// full-screen stays full-screen.
 ///
 /// The aspect hook lowers the reported aspect to 16:9 while a centered movie
-/// updates or draws, so its scripts lay it out for the region it is
+/// loads, updates or draws, so its scripts lay it out for the region it is
 /// drawn into. Markers that game code places from 3D positions
 /// (`FUN_1406c59f0`: `x = (px - W/2)*720/H`, centered on the screen) land on
 /// the same pixels in a 16:9 stage centered on the screen.
 ///
-/// The detours on the two wrapper functions record which movie runs on
+/// The detours on the three wrapper functions record which movie runs on
 /// the current thread, so the hooks above know when to act. The hooks install
 /// all-or-nothing, placement first and the movie detours last, so a partial
 /// failure leaves every movie as the game draws it.
 pub fn center_movies(module: &ModuleInfo) -> bool {
+    const LOAD_SIG: &str = "48 89 5C 24 08    48 89 74 24 10    57    48 81 EC ?? ?? ?? ??    8B F2    48 8B F9    \
+         48 8B 15 ?? ?? ?? ??    E8 ?? ?? ?? ??";
     const UPDATE_SIG: &str = "40 53    48 83 EC ??    48 8B D9    E8 ?? ?? ?? ??    FF 15 ?? ?? ?? ??    33 C9    \
          E8 ?? ?? ?? ??    80 7B 55 00    74 ??";
     const DRAW_SIG: &str = "40 57    48 81 EC ?? ?? ?? ??    48 8B F9    FF 15 ?? ?? ?? ??    80 7F 19 00    \
@@ -182,11 +195,13 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
          F3 0F 11 03    C7 43 10 04 00 00 00";
     const ASPECT_STORE: usize = 24;
 
+    let load = SignatureHook { tag: "movie_load", signature: LOAD_SIG, offset: 0 };
     let update = SignatureHook { tag: "movie_update", signature: UPDATE_SIG, offset: 0 };
     let draw = SignatureHook { tag: "movie_draw", signature: DRAW_SIG, offset: 0 };
     let place = SignatureHook { tag: "movie_place", signature: PLACE_SIG, offset: 0 };
     let aspect = SignatureHook { tag: "movie_aspect", signature: ASPECT_SIG, offset: ASPECT_STORE };
-    let (Some(update), Some(draw), Some(place), Some(aspect)) = (
+    let (Some(load), Some(update), Some(draw), Some(place), Some(aspect)) = (
+        find(module, &load),
         find(module, &update),
         find(module, &draw),
         find(module, &place),
@@ -212,7 +227,8 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
     if !hook_at(module, "movie_aspect", aspect, clamp_aspect) {
         return false;
     }
-    let detours: [(&str, usize, *const u8, &AtomicUsize); 2] = [
+    let detours: [(&str, usize, *const u8, &AtomicUsize); 3] = [
+        ("movie_load", load, load_detour as *const u8, &LOAD),
         ("movie_update", update, update_detour as *const u8, &UPDATE),
         ("movie_draw", draw, draw_detour as *const u8, &DRAW),
     ];
@@ -277,6 +293,11 @@ pub fn follow_text_scale(module: &ModuleInfo) -> bool {
     found.into_iter().all(|(tag, addr)| hook_at(module, tag, addr, follow_shift))
 }
 
+/// Detour of `FUN_140114d80`, a movie wrapper's load.
+unsafe extern "system" fn load_detour(wrapper: usize, kind: u32) -> u64 {
+    as_current(wrapper, || unsafe { original::<LoadFn>(&LOAD)(wrapper, kind) })
+}
+
 /// Detour of `FUN_140115660`, a movie wrapper's update, which runs the
 /// movie's scripts.
 unsafe extern "system" fn update_detour(wrapper: usize) {
@@ -334,7 +355,7 @@ fn clamp_aspect(ctx: &mut Context) {
     let current = CURRENT.with(|c| c.get());
     if current.wrapper == 0 {
         if !ASPECT_OUTSIDE_LOGGED.swap(true, Ordering::Relaxed) {
-            log_warn("movie_aspect : a movie asked for the aspect ratio outside a movie update or draw; it got the screen's");
+            log_warn("movie_aspect : a movie asked for the aspect ratio outside a movie load, update or draw; it got the screen's");
         }
         return;
     }
@@ -419,7 +440,7 @@ fn classify(wrapper: usize) -> Current {
         Some(movie) => movie.centered,
         None => {
             let name = read_name(definition + DEFINITION_NAME);
-            let centered = name.as_deref().is_some_and(is_hud_movie);
+            let centered = name.as_deref().is_some_and(|name| !keeps_full_screen(name));
             match &name {
                 Some(name) if centered => log(&format!("movies: '{name}' is centered")),
                 Some(name) => log(&format!("movies: '{name}' keeps the full screen")),
@@ -443,10 +464,11 @@ fn read_name(address: usize) -> Option<String> {
     (!name.is_empty() && name.iter().all(u8::is_ascii_graphic)).then(|| String::from_utf8_lossy(name).into_owned())
 }
 
-/// Whether `name` is on [`HUD_MOVIES`], with or without the `_z` suffix.
-fn is_hud_movie(name: &str) -> bool {
+/// Whether `name` is on [`FULL_SCREEN_MOVIES`], with or without the `_z`
+/// suffix.
+fn keeps_full_screen(name: &str) -> bool {
     let base = name.strip_suffix("_z").or_else(|| name.strip_suffix("_Z")).unwrap_or(name);
-    HUD_MOVIES.iter().any(|movie| base.eq_ignore_ascii_case(movie))
+    FULL_SCREEN_MOVIES.iter().any(|movie| base.eq_ignore_ascii_case(movie))
 }
 
 /// Logs a movie's stage, viewport and placement the first time it is drawn.

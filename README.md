@@ -4,7 +4,7 @@
 ***This project is designed exclusively for Windows due to its reliance on Windows-specific APIs.***
 
 ## Fixes
-- Constrains the HUD, minimap and subtitles to a centered 16:9 region
+- Constrains the HUD, minimap, subtitles and menus to a centered 16:9 region
 
 ## Build and Install
 Requires:
