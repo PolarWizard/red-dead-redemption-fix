@@ -34,7 +34,9 @@ pub struct HudConfig {
     /// 16:9: the Flash movies
     /// ([`crate::fixes::hud::center_movies`]),
     /// the text-size options
-    /// ([`crate::fixes::hud::follow_text_scale`]).
+    /// ([`crate::fixes::hud::follow_text_scale`]),
+    /// the minimap ring
+    /// ([`crate::fixes::radar::center_radar`]).
     pub enable: bool,
 }
 

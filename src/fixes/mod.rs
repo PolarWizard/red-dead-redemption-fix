@@ -25,6 +25,8 @@
 //!   elements out to the screen edges. The scripts live in `flash.rpf`, not in
 //!   the executable, so this half is inferred from the stretch and the
 //!   variable rather than read.
+//! * **The radar ring is not Flash.** `FUN_140692340` draws it with its own
+//!   orthographic projection, 5% of the full screen width from the left edge.
 //!
 //! # Keeping the HUD in a centered 16:9 region
 //!
@@ -32,10 +34,11 @@
 //! the player a 16:9 screen in the middle of the real one: it narrows `scaleX`
 //! to the region, moves the root translation to the region's left edge, and
 //! reports 16:9 to the movie's scripts so they lay out as on a 16:9 monitor.
-//! The 3D view, fades, post-process tints and the pause map keep the full
-//! screen.
+//! [`radar`] moves the ring into the same region. The 3D view, fades,
+//! post-process tints and the pause map keep the full screen.
 
 pub mod hud;
+pub mod radar;
 
 /// Aspect of the region the HUD is kept in.
 const ASPECT_16_9: f32 = 16.0 / 9.0;
