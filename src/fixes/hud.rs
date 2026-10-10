@@ -48,6 +48,14 @@ const SWF_STAGE_HEIGHT: usize = 0x48;
 /// stores 1.0 to +0x28 and +0x34 and zero to the rest.
 const ROOT_CONTEXT: usize = 0x20;
 const CONTEXT_TX: usize = 0x38;
+/// The executable's thread-local block is `[[GS:0x58]]`, slot 0. In it,
+/// `+0x38` is non-zero once the block is initialised and `+0x28` points at
+/// the thread's render context, as `FUN_14012f2f0` reads them. The context
+/// keeps its scissor rectangle at `+0x148` as left, right, top, bottom
+/// (`FUN_140ec7e90`: `MOVUPS [RCX+0x148],XMM0`).
+const TLS_READY: usize = 0x38;
+const TLS_RENDER_CONTEXT: usize = 0x28;
+const CONTEXT_SCISSOR: usize = 0x148;
 
 /// The movie wrapper whose load, update or draw runs on this thread.
 #[derive(Clone, Copy)]
@@ -59,7 +67,7 @@ struct Current {
     definition: usize,
     /// Whether the movie is not on [`FULL_SCREEN_MOVIES`].
     centered: bool,
-    /// Where [`place_movie`] put the movie, while it is drawn.
+    /// Where [`place_movie`] put the movie, while its display list is walked.
     layout: Option<Layout>,
 }
 
@@ -67,11 +75,13 @@ impl Current {
     const NONE: Self = Self { wrapper: 0, definition: 0, centered: false, layout: None };
 }
 
-/// A centered movie's placement, kept while it is drawn.
+/// A centered movie's placement, kept while its display list is walked.
 #[derive(Clone, Copy)]
 struct Layout {
     /// The root translation, in stage units.
     shift: f32,
+    /// The scissor rectangle before [`clip_to_region`].
+    scissor: Option<[i32; 4]>,
 }
 
 thread_local! {
@@ -95,13 +105,18 @@ static LOAD: AtomicUsize = AtomicUsize::new(0);
 static UPDATE: AtomicUsize = AtomicUsize::new(0);
 static DRAW: AtomicUsize = AtomicUsize::new(0);
 
+/// `FUN_140ec7e90(context, rect)`, the render context's scissor setter; 0
+/// when its signature was not found and movies are not clipped.
+static SET_SCISSOR: AtomicUsize = AtomicUsize::new(0);
+
 static ASPECT_OUTSIDE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 type LoadFn = unsafe extern "system" fn(usize, u32) -> u64;
 type WrapperFn = unsafe extern "system" fn(usize);
+type SetScissorFn = unsafe extern "system" fn(usize, *const [i32; 4]);
 
-/// Draws the HUD and the menus into a centered 16:9 region and tells their
-/// scripts the screen is 16:9.
+/// Draws the HUD and the menus into a centered 16:9 region, clipped to it,
+/// and tells their scripts the screen is 16:9.
 ///
 /// # How it was found
 ///
@@ -131,6 +146,7 @@ type WrapperFn = unsafe extern "system" fn(usize);
 /// MOV   R8,R10                    ; the player
 /// MOV   RCX,R9                    ; the root node
 /// CALL  FUN_14018dc30             ; walk the display list
+/// MOV   RCX,[RSP+0xc8]            ; <- scissor restore hook
 /// ```
 ///
 /// The game answers `FSCommand:GetAspectRatio` in `FUN_1401188e0`, one of the
@@ -154,6 +170,11 @@ type WrapperFn = unsafe extern "system" fn(usize);
 /// update and the draw take only `this` in RCX; the load also takes an
 /// integer in EDX (`MOV ESI,EDX`).
 ///
+/// The letterbox `FUN_1405bdd30` clips its clears with `FUN_14012f2f0(x, y,
+/// w, h)`, which stores `{x, x+w, y, y+h}` through `FUN_140ec7e90` into the
+/// render context of the calling thread. Nothing in the Flash player calls
+/// either.
+///
 /// # Why it works
 ///
 /// A viewport of `W`x`H` pixels and a 1280x720 stage give `scaleX = W/1280`
@@ -165,8 +186,12 @@ type WrapperFn = unsafe extern "system" fn(usize);
 /// zeroes both scale globals after the walk and rebuilds the root context for
 /// every movie, so the change never reaches another movie.
 ///
-/// The viewport and the aspect globals stay as they are, so everything
-/// full-screen stays full-screen.
+/// On a 16:9 screen nothing outside the stage is visible. Centered, anything
+/// a movie places beyond its stage edge would show beside the region, so the
+/// place hook also narrows the scissor to the region, and the restore hook
+/// puts the previous rectangle back after the walk. The viewport and the
+/// aspect globals stay as they are, so everything full-screen stays
+/// full-screen.
 ///
 /// The aspect hook lowers the reported aspect to 16:9 while a centered movie
 /// loads, updates or draws, so its scripts lay it out for the region it is
@@ -177,7 +202,8 @@ type WrapperFn = unsafe extern "system" fn(usize);
 /// The detours on the three wrapper functions record which movie runs on
 /// the current thread, so the hooks above know when to act. The hooks install
 /// all-or-nothing, placement first and the movie detours last, so a partial
-/// failure leaves every movie as the game draws it.
+/// failure leaves every movie as the game draws it. Clipping is skipped, with
+/// a warning, if its signatures are missing.
 pub fn center_movies(module: &ModuleInfo) -> bool {
     const LOAD_SIG: &str = "48 89 5C 24 08    48 89 74 24 10    57    48 81 EC ?? ?? ?? ??    8B F2    48 8B F9    \
          48 8B 15 ?? ?? ?? ??    E8 ?? ?? ?? ??";
@@ -191,9 +217,19 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
     const SCALE_X_STORE: usize = 0;
     const SCALE_Y_STORE: usize = 21;
     const AFTER_ROOT_CONTEXT: usize = 34;
+    const AFTER_WALK: usize = 50;
     const ASPECT_SIG: &str = "F3 0F 10 05 ?? ?? ?? ??    EB ??    48 8D 5A 08    EB ??    F3 0F 10 05 ?? ?? ?? ??    \
          F3 0F 11 03    C7 43 10 04 00 00 00";
     const ASPECT_STORE: usize = 24;
+    // FUN_140ec7e90: MOVUPS XMM0,[RDX]; MOVUPS [RCX+0x148],XMM0;
+    // MOV RCX,[RCX+0x128]; MOV RAX,[RCX]; JMP [RAX+0x80]
+    const SET_SCISSOR_SIG: &str = "0F 10 02    0F 11 81 48 01 00 00    48 8B 89 28 01 00 00    48 8B 01    \
+         48 FF A0 80 00 00 00";
+    // FUN_14012f2f0: MOV ECX,0x38 ... CMP byte [RCX+RAX],0; JNZ; CALL init;
+    // LEA EAX,[RDI+RBP]; MOV R8D,0x28 -- the TLS offsets of the ready byte
+    // and the render context.
+    const RENDER_CONTEXT_SIG: &str = "B9 38 00 00 00    41 8B F1    41 8B E8    8B DA    48 8B 00    80 3C 01 00    \
+         75 ??    E8 ?? ?? ?? ??    8D 04 2F    41 B8 28 00 00 00";
 
     let load = SignatureHook { tag: "movie_load", signature: LOAD_SIG, offset: 0 };
     let update = SignatureHook { tag: "movie_update", signature: UPDATE_SIG, offset: 0 };
@@ -209,6 +245,9 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
     ) else {
         return false;
     };
+    let set_scissor = SignatureHook { tag: "movie_clip", signature: SET_SCISSOR_SIG, offset: 0 };
+    let render_context = SignatureHook { tag: "movie_clip_context", signature: RENDER_CONTEXT_SIG, offset: 0 };
+    let set_scissor = find(module, &set_scissor).filter(|_| find(module, &render_context).is_some());
 
     // The two MOVSS [rip+disp32],XMM1 stores name the scale globals.
     let scale_x = rip_target(place + SCALE_X_STORE, 4, 8);
@@ -223,6 +262,13 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
 
     if !hook_at(module, "movie_place", place + AFTER_ROOT_CONTEXT, move |ctx| place_movie(ctx, scale_x, scale_y)) {
         return false;
+    }
+    if !hook_at(module, "movie_walked", place + AFTER_WALK, end_walk) {
+        return false;
+    }
+    match set_scissor {
+        Some(set_scissor) => SET_SCISSOR.store(set_scissor, Ordering::Release),
+        None => log_warn("movie_clip : not available; centered movies are not clipped to the region"),
     }
     if !hook_at(module, "movie_aspect", aspect, clamp_aspect) {
         return false;
@@ -327,8 +373,8 @@ fn as_current<R>(wrapper: usize, run: impl FnOnce() -> R) -> R {
     result
 }
 
-/// The place hook: narrows the stage of a centered movie to the region. R8
-/// holds the swf, and the root context is at `RSP+0x20`.
+/// The place hook: narrows the stage of a centered movie to the region and
+/// clips it there. R8 holds the swf, and the root context is at `RSP+0x20`.
 fn place_movie(ctx: &mut Context, scale_x: usize, scale_y: usize) {
     let current = CURRENT.with(|c| c.get());
     if current.wrapper == 0 {
@@ -343,10 +389,57 @@ fn place_movie(ctx: &mut Context, scale_x: usize, scale_y: usize) {
             write::<f32>(scale_x, placement.scale_x);
             write::<f32>(ctx.rsp as usize + ROOT_CONTEXT + CONTEXT_TX, placement.shift);
         }
-        let layout = Layout { shift: placement.shift };
+        let layout = Layout { shift: placement.shift, scissor: clip_to_region(placement.left, placement.width) };
         CURRENT.with(|c| c.set(Current { layout: Some(layout), ..current }));
     }
     note_first_draw(current.definition, stage, viewport, placement.as_ref());
+}
+
+/// Narrows the render context's scissor to the pixels `left..left + width`,
+/// returning the rectangle it replaced.
+fn clip_to_region(left: f32, width: f32) -> Option<[i32; 4]> {
+    let context = render_context()?;
+    let saved = unsafe { read::<[i32; 4]>(context + CONTEXT_SCISSOR) };
+    let clip = [saved[0].max(left.round() as i32), saved[1].min((left + width).round() as i32), saved[2], saved[3]];
+    set_scissor(context, &clip).then_some(saved)
+}
+
+/// The walked hook: puts back the scissor [`place_movie`] narrowed, after
+/// the movie's display-list walk, and ends the movie's layout.
+fn end_walk(_ctx: &mut Context) {
+    let current = CURRENT.with(|c| c.get());
+    let Some(layout) = current.layout else { return };
+    CURRENT.with(|c| c.set(Current { layout: None, ..current }));
+    if let (Some(saved), Some(context)) = (layout.scissor, render_context()) {
+        set_scissor(context, &saved);
+    }
+}
+
+/// Sets the scissor of the render `context` through `FUN_140ec7e90`. False
+/// when clipping is not available.
+fn set_scissor(context: usize, rect: &[i32; 4]) -> bool {
+    let set = SET_SCISSOR.load(Ordering::Acquire);
+    if set != 0 {
+        unsafe { std::mem::transmute::<usize, SetScissorFn>(set)(context, rect) };
+    }
+    set != 0
+}
+
+/// The calling thread's render context, read the way `FUN_14012f2f0` reads
+/// it, or `None` before the game has initialised the thread's block.
+fn render_context() -> Option<usize> {
+    let slots: usize;
+    // TEB.ThreadLocalStoragePointer of the calling thread.
+    unsafe { std::arch::asm!("mov {}, gs:[0x58]", out(reg) slots, options(nostack, readonly, preserves_flags)) };
+    if slots == 0 {
+        return None;
+    }
+    let block = unsafe { read::<usize>(slots) };
+    if block == 0 || unsafe { read::<u8>(block + TLS_READY) } == 0 {
+        return None;
+    }
+    let context = unsafe { read::<usize>(block + TLS_RENDER_CONTEXT) };
+    (context != 0).then_some(context)
 }
 
 /// The aspect hook: reports 16:9 to a centered movie on a wider screen. XMM0

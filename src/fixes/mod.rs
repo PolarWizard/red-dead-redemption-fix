@@ -33,10 +33,10 @@
 //! For every movie except the full-screen ones (fades, effects, the pause-map
 //! overlay), [`hud`] hands the player a 16:9 screen in the middle of the real
 //! one: it narrows `scaleX` to the region, moves the root translation to the
-//! region's left edge, and reports 16:9 to the movie's scripts so they lay
-//! out as on a 16:9 monitor. [`radar`] moves the ring into the same region.
-//! The 3D view, fades, post-process tints and the pause map keep the full
-//! screen.
+//! region's left edge, clips the movie to the region, and reports 16:9 to the
+//! movie's scripts so they lay out as on a 16:9 monitor. [`radar`] moves the
+//! ring into the same region. The 3D view, fades, post-process tints and the
+//! pause map keep the full screen.
 
 pub mod hud;
 pub mod radar;
