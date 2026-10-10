@@ -3,6 +3,9 @@
 
 ***This project is designed exclusively for Windows due to its reliance on Windows-specific APIs.***
 
+## Fixes
+- Constrains the HUD and subtitles to a centered 16:9 region
+
 ## Build and Install
 Requires:
 - [Rust](https://www.rust-lang.org/tools/install) (cargo)

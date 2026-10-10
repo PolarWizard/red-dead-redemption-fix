@@ -1,2 +1,6 @@
 # Set to true/false to enable/disable this mod.
 super_enable = true
+
+# If enabled constrains the HUD to a centered 16:9 region.
+[hud]
+enable = true

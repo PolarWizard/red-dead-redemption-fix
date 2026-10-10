@@ -1,4 +1,5 @@
 mod config;
+mod fixes;
 mod utils;
 
 use std::ffi::c_void;
@@ -28,6 +29,15 @@ fn log_open(this_module: HMODULE, module: &ModuleInfo) {
     log("-------------------------------------");
 }
 
+/// Logs whether `fix` applied.
+fn report(fix: &str, applied: bool) {
+    if applied {
+        log(&format!("main: {fix} applied"));
+    } else {
+        log_error(&format!("main: {fix} not applied -- see the lines above"));
+    }
+}
+
 /// Applies every fix, synchronously, from `DllMain`.
 ///
 /// Every fix hooks code the game runs while it draws or updates its UI, and
@@ -54,6 +64,12 @@ fn main(this_module: HMODULE) {
             log("main: super_enable is false in the config, mod not applied");
             return;
         }
+        if !config.hud.enable {
+            log("main: hud.enable is false in the config, the HUD stays at the screen edges");
+            return;
+        }
+        report("hud (movies)", fixes::hud::center_movies(&module));
+        report("hud (text scale)", fixes::hud::follow_text_scale(&module));
     });
 
     if result.is_err() {
