@@ -39,6 +39,7 @@
 //! pause map keep the full screen.
 
 pub mod hud;
+pub mod intro;
 pub mod radar;
 
 /// Aspect of the region the HUD is kept in.

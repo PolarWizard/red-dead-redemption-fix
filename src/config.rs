@@ -19,11 +19,12 @@ const FILE_NAME: &str = "red_dead_redemption_fix.toml";
 pub struct Config {
     pub super_enable: bool,
     pub hud: HudConfig,
+    pub intro: IntroConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { super_enable: true, hud: HudConfig::default() }
+        Self { super_enable: true, hud: HudConfig::default(), intro: IntroConfig::default() }
     }
 }
 
@@ -41,6 +42,20 @@ pub struct HudConfig {
 }
 
 impl Default for HudConfig {
+    fn default() -> Self {
+        Self { enable: true }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(default)]
+pub struct IntroConfig {
+    /// Skips the logo video after the legal text at startup
+    /// ([`crate::fixes::intro::skip_logo_video`]).
+    pub enable: bool,
+}
+
+impl Default for IntroConfig {
     fn default() -> Self {
         Self { enable: true }
     }

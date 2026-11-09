@@ -5,6 +5,7 @@
 
 ## Fixes
 - Constrains the HUD, minimap, subtitles and menus to a centered 16:9 region
+- Skips the logo video at startup
 
 ## Build and Install
 Requires:

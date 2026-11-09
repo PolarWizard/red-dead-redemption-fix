@@ -64,6 +64,9 @@ fn main(this_module: HMODULE) {
             log("main: super_enable is false in the config, mod not applied");
             return;
         }
+        if config.intro.enable {
+            report("intro", fixes::intro::skip_logo_video(&module));
+        }
         if !config.hud.enable {
             log("main: hud.enable is false in the config, the HUD stays at the screen edges");
             return;

@@ -4,3 +4,7 @@ super_enable = true
 # If enabled constrains the HUD to a centered 16:9 region.
 [hud]
 enable = true
+
+# If enabled skips the logo video after the legal text at startup.
+[intro]
+enable = true
