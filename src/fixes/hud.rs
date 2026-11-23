@@ -1,10 +1,10 @@
 //! The Flash movies, the HUD and the menus: which movie is running, where the
-//! player puts its stage on screen, and which aspect ratio its scripts are
-//! told.
+//! player puts its stage on screen, which aspect ratio its scripts are told,
+//! and where the mouse lands in it.
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use grapnel::Context;
 
@@ -98,6 +98,11 @@ struct Movie {
 }
 
 static MOVIES: Mutex<Vec<Movie>> = Mutex::new(Vec::new());
+
+/// The centered region's width as a fraction of the viewport width, as `f32`
+/// bits; 1.0 while nothing is centered. [`place_movie`] writes it for every
+/// movie it may center; the mouse hooks read it.
+static REGION_WIDTH: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 
 /// Original `FUN_140114d80` (load), `FUN_140115660` (update) and
 /// `FUN_1401157d0` (draw), reached through grapnel's trampolines.
@@ -285,6 +290,89 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
     true
 }
 
+/// Maps the mouse onto centered movies: hover and clicks, and dragging an
+/// options slider.
+///
+/// # How it was found
+///
+/// The mouse update `FUN_140f9dab0` stores the cursor as client pixels at
+/// `device+0x20`/`+0x24` and divided by the client size at `+0x38`/`+0x3c`.
+/// The Flash hit test `FUN_14018ccb0(node, player)` runs from the player's
+/// update `FUN_140180f80`, inside the wrapper update `FUN_140115660`. It
+/// widens its cursor by `f11 = ((aspect - 4/3)/(4/9))*0.25 + 0.75`, 1 at
+/// 16:9 and 2 at 32:9, and every node rectangle by the same factor, so the
+/// stretched stage hit-tests correctly:
+///
+/// ```text
+/// CALL   FUN_1401461c0            ; nx   <- HOVER_SIG starts here
+/// MOVAPS XMM14,XMM0
+/// CALL   FUN_140146210            ; ny
+/// MOVAPS XMM15,XMM0
+/// CALL   FUN_14007dd00            ; aspect
+/// MOVAPS XMM13,XMM0
+/// MOV    dword ptr [RBP+0x77],0x0 ; <- hover hook
+/// SUBSS  XMM13,[4/3]              ; f11 from here on
+/// ...
+/// MULSS  XMM13,[1280.0]           ; cursor x = f11 * 1280 * nx
+/// ```
+///
+/// Clicks act on the node the hit test marked (`player+0x58`), and the wheel
+/// reports a delta, so neither carries a position. The options slider
+/// `FUN_140112a40` (vtable `0x141c698f8` slot +0x3b0) converts the pixel x
+/// itself and compares it with the bar's left edge in stage units:
+///
+/// ```text
+/// MOVD     XMM7,EAX               ; client pixel x  <- SLIDER_SIG starts here
+/// CVTDQ2PS XMM7,XMM7
+/// ...
+/// DIVSS    XMM7,XMM0              ; / screen width
+/// MOVAPS   XMM0,XMM2
+/// MULSS    XMM7,[1280.0]          ; stage x
+/// SUBSS    XMM0,XMM9              ; <- slider hook
+/// ```
+///
+/// The pause map reads the normalized cursor itself (`FUN_1405fd910`) and
+/// keeps the full screen, so the device values stay as they are.
+///
+/// # Why it works
+///
+/// The hit test compares the cursor with each node's world matrix, which the
+/// last draw left at `node+0x58` with the root translation
+/// [`center_movies`] adds already in it. A centered movie's world x maps to
+/// the screen as `px = x * scaleX = x * w/1280`, so the cursor's world x is
+/// `px * 1280/w`, which is `1280 * nx/width` for `width = w/W`
+/// ([`REGION_WIDTH`]). The hover hook divides `nx` by `width` and replaces the
+/// aspect with 16:9, which makes `f11` 1. The slider's bar edge is also a
+/// world x (`[widget+0xbc]`, from a node's `+0x68`), so the slider hook
+/// divides its stage x by `width` too. Both hooks change nothing while the
+/// screen is not wider than 16:9, and the hover hook changes nothing for a
+/// movie that keeps the full screen.
+pub fn follow_mouse(module: &ModuleInfo) -> bool {
+    const HOVER_SIG: &str = "E8 ?? ?? ?? ??    44 0F 28 F0    E8 ?? ?? ?? ??    44 0F 28 F8    E8 ?? ?? ?? ??    \
+         44 0F 28 E8    C7 45 ?? 00 00 00 00    F3 44 0F 5C 2D ?? ?? ?? ??";
+    const AFTER_ASPECT_READ: usize = 27;
+    const SLIDER_SIG: &str = "66 0F 6E F8    0F 5B FF    F3 44 0F 59 CE    F3 0F 5E F8    0F 28 C2    \
+         F3 0F 59 3D ?? ?? ?? ??    F3 41 0F 5C C1";
+    const STAGE_WIDTH_LOAD: usize = 19;
+    const AFTER_STAGE_X: usize = 27;
+    const STAGE_WIDTH: f32 = 1280.0;
+
+    let hover = SignatureHook { tag: "mouse_hover", signature: HOVER_SIG, offset: AFTER_ASPECT_READ };
+    let slider = SignatureHook { tag: "mouse_slider", signature: SLIDER_SIG, offset: 0 };
+    let (Some(hover), Some(slider)) = (find(module, &hover), find(module, &slider)) else {
+        return false;
+    };
+    // MULSS XMM7,[rip+disp32]: F3 0F 59 3D, displacement at +4, 8 bytes.
+    let constant = rip_target(slider + STAGE_WIDTH_LOAD, 4, 8);
+    let value = unsafe { read::<f32>(constant) };
+    if value != STAGE_WIDTH {
+        log_error(&format!("mouse_slider : expected {STAGE_WIDTH} at {}+{:x}, found {value}", module.name, module.rva(constant)));
+        return false;
+    }
+    hook_at(module, "mouse_hover", hover, map_hover)
+        && hook_at(module, "mouse_slider", slider + AFTER_STAGE_X, map_slider)
+}
+
 /// Keeps the subtitle and objective text-size options scaling the text about
 /// the center of the region instead of the screen.
 ///
@@ -384,6 +472,10 @@ fn place_movie(ctx: &mut Context, scale_x: usize, scale_y: usize) {
     let stage = unsafe { (read::<f32>(swf + SWF_STAGE_WIDTH), read::<f32>(swf + SWF_STAGE_HEIGHT)) };
     let viewport = unsafe { (read::<f32>(scale_x) * stage.0, read::<f32>(scale_y) * stage.1) };
     let placement = if current.centered { centered(stage, viewport) } else { None };
+    if current.centered && is_16_9(stage.0, stage.1) {
+        let width = placement.as_ref().map_or(1.0, |p| p.width / viewport.0);
+        REGION_WIDTH.store(width.to_bits(), Ordering::Relaxed);
+    }
     if let Some(placement) = &placement {
         unsafe {
             write::<f32>(scale_x, placement.scale_x);
@@ -458,6 +550,27 @@ fn clamp_aspect(ctx: &mut Context) {
     let aspect = &mut ctx.xmm0.f32()[0];
     if *aspect > ASPECT_16_9 {
         *aspect = ASPECT_16_9;
+    }
+}
+
+/// The hover hook: maps the cursor's `nx` (XMM14) into the centered movie's
+/// world space and makes the widening factor 1 through the aspect (XMM13).
+fn map_hover(ctx: &mut Context) {
+    let current = CURRENT.with(|c| c.get());
+    let width = f32::from_bits(REGION_WIDTH.load(Ordering::Relaxed));
+    if !current.centered || width >= 1.0 || !stage_is_16_9(current.wrapper) {
+        return;
+    }
+    ctx.xmm14.f32()[0] /= width;
+    ctx.xmm13.f32()[0] = ASPECT_16_9;
+}
+
+/// The slider hook: maps the slider's stage x (XMM7, `px/W * 1280`) into the
+/// centered movie's world space.
+fn map_slider(ctx: &mut Context) {
+    let width = f32::from_bits(REGION_WIDTH.load(Ordering::Relaxed));
+    if width < 1.0 {
+        ctx.xmm7.f32()[0] /= width;
     }
 }
 

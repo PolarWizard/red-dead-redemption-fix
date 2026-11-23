@@ -72,6 +72,7 @@ fn main(this_module: HMODULE) {
             return;
         }
         report("hud (movies)", fixes::hud::center_movies(&module));
+        report("hud (mouse)", fixes::hud::follow_mouse(&module));
         report("hud (text scale)", fixes::hud::follow_text_scale(&module));
         report("hud (radar)", fixes::radar::center_radar(&module));
     });

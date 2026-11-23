@@ -34,6 +34,8 @@ pub struct HudConfig {
     /// Keeps the HUD inside a centered 16:9 region on screens wider than
     /// 16:9: the Flash movies
     /// ([`crate::fixes::hud::center_movies`]),
+    /// the mouse in them
+    /// ([`crate::fixes::hud::follow_mouse`]),
     /// the text-size options
     /// ([`crate::fixes::hud::follow_text_scale`]),
     /// the minimap ring
