@@ -5,7 +5,7 @@
 
 ## Fixes
 - Constrains the HUD, minimap, subtitles and menus to a centered 16:9, 21:9 or 32:9 region, with the mouse following the menus
-- Skips the logo video at startup
+- Skips the legal screens and the logo video at startup
 
 ## Build and Install
 Requires:

@@ -62,8 +62,9 @@ impl Default for HudConfig {
 #[derive(Deserialize, Debug)]
 #[serde(default)]
 pub struct IntroConfig {
-    /// Skips the logo video after the legal text at startup
-    /// ([`crate::fixes::intro::skip_logo_video`]).
+    /// Skips the legal screens and the logo video at startup
+    /// ([`crate::fixes::intro::skip_legal_screens`],
+    /// [`crate::fixes::intro::skip_logo_video`]).
     pub enable: bool,
 }
 

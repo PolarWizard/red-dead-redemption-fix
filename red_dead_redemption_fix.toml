@@ -10,6 +10,6 @@ super_enable = true
 enable = true
 constrain = 0
 
-# If enabled skips the logo video after the legal text at startup.
+# If enabled skips the legal screens and the logo video at startup.
 [intro]
 enable = true

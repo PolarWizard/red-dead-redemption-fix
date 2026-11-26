@@ -65,7 +65,8 @@ fn main(this_module: HMODULE) {
             return;
         }
         if config.intro.enable {
-            report("intro", fixes::intro::skip_logo_video(&module));
+            report("intro (legal screens)", fixes::intro::skip_legal_screens(&module));
+            report("intro (logo video)", fixes::intro::skip_logo_video(&module));
         }
         if !config.hud.enable {
             log("main: hud.enable is false in the config, the HUD stays at the screen edges");
