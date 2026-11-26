@@ -32,5 +32,11 @@ If you're using VS Code, the same steps are wired up as tasks in `.vscode/tasks.
 ## Configuration
 - Edit `<game folder>/scripts/red_dead_redemption_fix.toml`
 
+## Screenshots
+| HUD Constraining |
+| :---: |
+| ![HUD constraining demo](images/red-dead-redemption-fix-1.gif) |
+| 32:9 → 21:9 → 16:9 |
+
 ## License
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information. Third-party license text for every dependency can be generated with `python scripts/licenses.py`, which writes it out to `LICENSES`.
