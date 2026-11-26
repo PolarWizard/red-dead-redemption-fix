@@ -31,21 +31,31 @@ impl Default for Config {
 #[derive(Deserialize, Debug)]
 #[serde(default)]
 pub struct HudConfig {
-    /// Keeps the HUD inside a centered 16:9 region on screens wider than
-    /// 16:9: the Flash movies
-    /// ([`crate::fixes::hud::center_movies`]),
-    /// the mouse in them
-    /// ([`crate::fixes::hud::follow_mouse`]),
-    /// the text-size options
-    /// ([`crate::fixes::hud::follow_text_scale`]),
-    /// the minimap ring
+    /// Keeps the HUD and the menus inside a centered region on screens wider
+    /// than it: the Flash movies ([`crate::fixes::hud::center_movies`]), the
+    /// mouse in them ([`crate::fixes::hud::follow_mouse`]), the text-size
+    /// options ([`crate::fixes::hud::follow_text_scale`]) and the minimap ring
     /// ([`crate::fixes::radar::center_radar`]).
     pub enable: bool,
+    /// Preset selecting the region's aspect; see [`HudConfig::aspect`].
+    pub constrain: u32,
+}
+
+impl HudConfig {
+    /// The width-over-height ratio `constrain` selects: 0 is 16:9, 1 is 21:9,
+    /// 2 is 32:9. Every other value is 16:9.
+    pub fn aspect(&self) -> f32 {
+        match self.constrain {
+            1 => 21.0 / 9.0,
+            2 => 32.0 / 9.0,
+            _ => 16.0 / 9.0,
+        }
+    }
 }
 
 impl Default for HudConfig {
     fn default() -> Self {
-        Self { enable: true }
+        Self { enable: true, constrain: 0 }
     }
 }
 

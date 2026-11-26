@@ -71,10 +71,12 @@ fn main(this_module: HMODULE) {
             log("main: hud.enable is false in the config, the HUD stays at the screen edges");
             return;
         }
-        report("hud (movies)", fixes::hud::center_movies(&module));
+        let aspect = config.hud.aspect();
+        log(&format!("main: the HUD is constrained to aspect {aspect:.4}"));
+        report("hud (movies)", fixes::hud::center_movies(&module, aspect));
         report("hud (mouse)", fixes::hud::follow_mouse(&module));
         report("hud (text scale)", fixes::hud::follow_text_scale(&module));
-        report("hud (radar)", fixes::radar::center_radar(&module));
+        report("hud (radar)", fixes::radar::center_radar(&module, aspect));
     });
 
     if result.is_err() {

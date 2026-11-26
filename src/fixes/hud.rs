@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use grapnel::Context;
 
-use super::{ASPECT_16_9, WIDER_THAN_16_9};
+use super::{ASPECT_16_9, WIDER_BY};
 use crate::utils::{
     ModuleInfo, SignatureHook, detour_at, find, hook_at, log, log_error, log_warn, read, readable, rip_target, write,
 };
@@ -120,8 +120,9 @@ type LoadFn = unsafe extern "system" fn(usize, u32) -> u64;
 type WrapperFn = unsafe extern "system" fn(usize);
 type SetScissorFn = unsafe extern "system" fn(usize, *const [i32; 4]);
 
-/// Draws the HUD and the menus into a centered 16:9 region, clipped to it,
-/// and tells their scripts the screen is 16:9.
+/// Draws the HUD and the menus into a centered region of `aspect` (16:9, 21:9
+/// or 32:9, from the config), clipped to it, and tells their scripts the
+/// screen has that aspect. The maths below uses 16:9, the default.
 ///
 /// # How it was found
 ///
@@ -209,7 +210,7 @@ type SetScissorFn = unsafe extern "system" fn(usize, *const [i32; 4]);
 /// all-or-nothing, placement first and the movie detours last, so a partial
 /// failure leaves every movie as the game draws it. Clipping is skipped, with
 /// a warning, if its signatures are missing.
-pub fn center_movies(module: &ModuleInfo) -> bool {
+pub fn center_movies(module: &ModuleInfo, aspect: f32) -> bool {
     const LOAD_SIG: &str = "48 89 5C 24 08    48 89 74 24 10    57    48 81 EC ?? ?? ?? ??    8B F2    48 8B F9    \
          48 8B 15 ?? ?? ?? ??    E8 ?? ?? ?? ??";
     const UPDATE_SIG: &str = "40 53    48 83 EC ??    48 8B D9    E8 ?? ?? ?? ??    FF 15 ?? ?? ?? ??    33 C9    \
@@ -240,13 +241,13 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
     let update = SignatureHook { tag: "movie_update", signature: UPDATE_SIG, offset: 0 };
     let draw = SignatureHook { tag: "movie_draw", signature: DRAW_SIG, offset: 0 };
     let place = SignatureHook { tag: "movie_place", signature: PLACE_SIG, offset: 0 };
-    let aspect = SignatureHook { tag: "movie_aspect", signature: ASPECT_SIG, offset: ASPECT_STORE };
-    let (Some(load), Some(update), Some(draw), Some(place), Some(aspect)) = (
+    let aspect_store = SignatureHook { tag: "movie_aspect", signature: ASPECT_SIG, offset: ASPECT_STORE };
+    let (Some(load), Some(update), Some(draw), Some(place), Some(aspect_store)) = (
         find(module, &load),
         find(module, &update),
         find(module, &draw),
         find(module, &place),
-        find(module, &aspect),
+        find(module, &aspect_store),
     ) else {
         return false;
     };
@@ -265,7 +266,7 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
         module.rva(scale_y)
     ));
 
-    if !hook_at(module, "movie_place", place + AFTER_ROOT_CONTEXT, move |ctx| place_movie(ctx, scale_x, scale_y)) {
+    if !hook_at(module, "movie_place", place + AFTER_ROOT_CONTEXT, move |ctx| place_movie(ctx, scale_x, scale_y, aspect)) {
         return false;
     }
     if !hook_at(module, "movie_walked", place + AFTER_WALK, end_walk) {
@@ -275,7 +276,7 @@ pub fn center_movies(module: &ModuleInfo) -> bool {
         Some(set_scissor) => SET_SCISSOR.store(set_scissor, Ordering::Release),
         None => log_warn("movie_clip : not available; centered movies are not clipped to the region"),
     }
-    if !hook_at(module, "movie_aspect", aspect, clamp_aspect) {
+    if !hook_at(module, "movie_aspect", aspect_store, move |ctx| clamp_aspect(ctx, aspect)) {
         return false;
     }
     let detours: [(&str, usize, *const u8, &AtomicUsize); 3] = [
@@ -463,7 +464,7 @@ fn as_current<R>(wrapper: usize, run: impl FnOnce() -> R) -> R {
 
 /// The place hook: narrows the stage of a centered movie to the region and
 /// clips it there. R8 holds the swf, and the root context is at `RSP+0x20`.
-fn place_movie(ctx: &mut Context, scale_x: usize, scale_y: usize) {
+fn place_movie(ctx: &mut Context, scale_x: usize, scale_y: usize, aspect: f32) {
     let current = CURRENT.with(|c| c.get());
     if current.wrapper == 0 {
         return;
@@ -471,7 +472,7 @@ fn place_movie(ctx: &mut Context, scale_x: usize, scale_y: usize) {
     let swf = ctx.r8 as usize;
     let stage = unsafe { (read::<f32>(swf + SWF_STAGE_WIDTH), read::<f32>(swf + SWF_STAGE_HEIGHT)) };
     let viewport = unsafe { (read::<f32>(scale_x) * stage.0, read::<f32>(scale_y) * stage.1) };
-    let placement = if current.centered { centered(stage, viewport) } else { None };
+    let placement = if current.centered { centered(stage, viewport, aspect) } else { None };
     if current.centered && is_16_9(stage.0, stage.1) {
         let width = placement.as_ref().map_or(1.0, |p| p.width / viewport.0);
         REGION_WIDTH.store(width.to_bits(), Ordering::Relaxed);
@@ -534,9 +535,10 @@ fn render_context() -> Option<usize> {
     (context != 0).then_some(context)
 }
 
-/// The aspect hook: reports 16:9 to a centered movie on a wider screen. XMM0
-/// holds the aspect about to be stored into `fs_AspectRatio`.
-fn clamp_aspect(ctx: &mut Context) {
+/// The aspect hook: reports the region's `aspect` to a centered movie on a
+/// wider screen. XMM0 holds the aspect about to be stored into
+/// `fs_AspectRatio`.
+fn clamp_aspect(ctx: &mut Context, region: f32) {
     let current = CURRENT.with(|c| c.get());
     if current.wrapper == 0 {
         if !ASPECT_OUTSIDE_LOGGED.swap(true, Ordering::Relaxed) {
@@ -548,8 +550,8 @@ fn clamp_aspect(ctx: &mut Context) {
         return;
     }
     let aspect = &mut ctx.xmm0.f32()[0];
-    if *aspect > ASPECT_16_9 {
-        *aspect = ASPECT_16_9;
+    if *aspect > region {
+        *aspect = region;
     }
 }
 
@@ -592,19 +594,19 @@ struct Placement {
     width: f32,
 }
 
-/// The centered 16:9 placement of a `stage` (width, height) drawn into a
-/// `viewport` of that many pixels, or `None` when the stage is not 16:9 or
-/// the viewport is not wider than 16:9.
-fn centered(stage: (f32, f32), viewport: (f32, f32)) -> Option<Placement> {
+/// The placement of a `stage` (width, height) in a centered region of
+/// `aspect` inside a `viewport` of that many pixels, or `None` when the
+/// stage is not 16:9 or the viewport is not wider than the region.
+fn centered(stage: (f32, f32), viewport: (f32, f32), aspect: f32) -> Option<Placement> {
     let (stage_w, stage_h) = stage;
     let (view_w, view_h) = viewport;
     if !(stage_w > 0.0 && stage_h > 0.0 && view_h > 0.0) || !is_16_9(stage_w, stage_h) {
         return None;
     }
-    if view_w <= view_h * WIDER_THAN_16_9 {
+    if view_w <= view_h * aspect * WIDER_BY {
         return None;
     }
-    let width = view_h * ASPECT_16_9;
+    let width = view_h * aspect;
     let left = (view_w - width) * 0.5;
     let scale_x = width / stage_w;
     Some(Placement { scale_x, shift: left / scale_x, left, width })
@@ -694,7 +696,7 @@ fn note_first_draw(definition: usize, stage: (f32, f32), viewport: (f32, f32), p
         None if movie.centered && !is_16_9(stage.0, stage.1) => {
             log_warn(&format!("{line}; its stage is not 16:9, so it keeps the full screen"))
         }
-        None if movie.centered => log(&format!("{line}; the viewport is not wider than 16:9, nothing to center")),
+        None if movie.centered => log(&format!("{line}; the viewport is not wider than the region, nothing to center")),
         None => log(&format!("{line}, full screen")),
     }
 }

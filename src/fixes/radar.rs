@@ -1,10 +1,10 @@
 //! The minimap ring, which the engine draws outside the Flash player.
 
-use super::ASPECT_16_9;
+use super::WIDER_BY;
 use crate::utils::{ModuleInfo, SignatureHook, find, hook_at, log, log_error, read, rip_target};
 
 /// Moves the minimap ring from the left edge of the screen into the centered
-/// 16:9 region.
+/// region of `aspect`.
 ///
 /// # How it was found
 ///
@@ -32,15 +32,15 @@ use crate::utils::{ModuleInfo, SignatureHook, find, hook_at, log, log_error, rea
 ///
 /// # Why it works
 ///
-/// With `f` = 0.05, XMM15 holds `width * f` and XMM7 holds `base * f`, so
-/// `edge = XMM7 * 16/9` is the margin on a 16:9 screen of the same height.
-/// The ring sits at `edge` from the left of a 16:9 screen, and the region
-/// starts `(width - base*16/9)/2 = (XMM15 - edge)/(2f)` units from the left of
-/// this one, so the hook sets `XMM15 = edge + (XMM15 - edge)/(2f)`. It leaves
-/// XMM15 alone unless the screen is wider than 16:9 (by 0.2%). The
-/// projection's scale and the vertical layout do not change, so the ring
-/// keeps its 16:9 size and height.
-pub fn center_radar(module: &ModuleInfo) -> bool {
+/// With `f` = 0.05 and the region's aspect `a`, XMM15 holds `width * f` and
+/// XMM7 holds `base * f`, so `edge = XMM7 * a` is the margin on a screen of
+/// aspect `a` and the same height. The ring sits at `edge` from the left of
+/// such a screen, and the region starts `(width - base*a)/2 =
+/// (XMM15 - edge)/(2f)` units from the left of this one, so the hook sets
+/// `XMM15 = edge + (XMM15 - edge)/(2f)`. It leaves XMM15 alone unless the
+/// screen is wider than the region (by 0.2%). The projection's scale and the
+/// vertical layout do not change, so the ring keeps its size and height.
+pub fn center_radar(module: &ModuleInfo, aspect: f32) -> bool {
     const RADAR_SIG: &str = "F3 44 0F 59 3D ?? ?? ?? ??    C7 45 30 00 00 00 00    F3 44 0F 10 25 ?? ?? ?? ??    \
          F3 0F 11 7C 24 50";
     const MARGIN_MULTIPLY: usize = 0;
@@ -59,8 +59,8 @@ pub fn center_radar(module: &ModuleInfo) -> bool {
 
     hook_at(module, site.tag, hit + AFTER_MARGIN_MULTIPLY, move |ctx| {
         let margin = ctx.xmm15.f32()[0];
-        let edge = ctx.xmm7.f32()[0] * ASPECT_16_9;
-        if margin > edge * 1.002 {
+        let edge = ctx.xmm7.f32()[0] * aspect;
+        if margin > edge * WIDER_BY {
             ctx.xmm15.f32()[0] = edge + (margin - edge) / (2.0 * factor);
         }
     })

@@ -28,24 +28,25 @@
 //! * **The radar ring is not Flash.** `FUN_140692340` draws it with its own
 //!   orthographic projection, 5% of the full screen width from the left edge.
 //!
-//! # Keeping the HUD and the menus in a centered 16:9 region
+//! # Keeping the HUD and the menus in a centered region
 //!
 //! For every movie except the full-screen ones (fades, effects, the pause-map
-//! overlay), [`hud`] hands the player a 16:9 screen in the middle of the real
-//! one: it narrows `scaleX` to the region, moves the root translation to the
-//! region's left edge, clips the movie to the region, and reports 16:9 to the
-//! movie's scripts so they lay out as on a 16:9 monitor. It maps the mouse
-//! onto the region for those movies. [`radar`] moves the ring into the same
-//! region. The 3D view, fades, post-process tints and the pause map keep the
-//! full screen.
+//! overlay), [`hud`] hands the player a screen of the configured aspect (16:9
+//! by default, or 21:9 or 32:9) in the middle of the real one: it narrows
+//! `scaleX` to the region, moves the root translation to the region's left
+//! edge, clips the movie to the region, and reports the region's aspect to
+//! the movie's scripts so they lay out as on a monitor of that aspect. It
+//! maps the mouse onto the region for those movies. [`radar`] moves the ring
+//! into the same region. The 3D view, fades, post-process tints and the pause
+//! map keep the full screen.
 
 pub mod hud;
 pub mod intro;
 pub mod radar;
 
-/// Aspect of the region the HUD is kept in.
+/// Aspect of the movies' stages, and of the default region.
 const ASPECT_16_9: f32 = 16.0 / 9.0;
 
-/// Screens up to 0.2% wider than 16:9 count as 16:9, so 1920x1080 and
-/// 2560x1440 draw exactly as without the mod.
-const WIDER_THAN_16_9: f32 = ASPECT_16_9 * 1.002;
+/// Screens up to 0.2% wider than the region count as no wider, so at the
+/// 16:9 preset 1920x1080 and 2560x1440 draw exactly as without the mod.
+const WIDER_BY: f32 = 1.002;

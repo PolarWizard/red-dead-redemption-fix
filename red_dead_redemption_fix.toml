@@ -1,9 +1,14 @@
 # Set to true/false to enable/disable this mod.
 super_enable = true
 
-# If enabled constrains the HUD to a centered 16:9 region.
+# If enabled constrains the HUD to one of the presets:
+# 0 - 16:9
+# 1 - 21:9
+# 2 - 32:9
+# other - 16:9
 [hud]
 enable = true
+constrain = 0
 
 # If enabled skips the logo video after the legal text at startup.
 [intro]
