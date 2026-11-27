@@ -37,9 +37,11 @@
 //! edge, clips the movie to the region, and reports the region's aspect to
 //! the movie's scripts so they lay out as on a monitor of that aspect. It
 //! maps the mouse onto the region for those movies. [`radar`] moves the ring
-//! into the same region. The 3D view, fades, post-process tints and the pause
-//! map keep the full screen.
+//! into the same region. [`cutscenes`] keeps the `popup` movie from drawing
+//! pillarbox bars in cutscenes on a region wider than 16:9. The 3D view, fades,
+//! post-process tints and the pause map keep the full screen.
 
+pub mod cutscenes;
 pub mod hud;
 pub mod intro;
 pub mod radar;

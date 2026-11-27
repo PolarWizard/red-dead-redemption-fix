@@ -77,6 +77,7 @@ fn main(this_module: HMODULE) {
         report("hud (mouse)", fixes::hud::follow_mouse(&module));
         report("hud (text scale)", fixes::hud::follow_text_scale(&module));
         report("hud (radar)", fixes::radar::center_radar(&module, aspect));
+        report("cutscenes (black bars)", fixes::cutscenes::hide_black_bars(&module, aspect));
     });
 
     if result.is_err() {
