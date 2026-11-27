@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "red-dead-redemption-fix"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "grapnel",
  "memchr",
