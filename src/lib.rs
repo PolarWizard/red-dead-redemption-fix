@@ -73,7 +73,6 @@ fn main(this_module: HMODULE) {
             return;
         }
         let aspect = config.hud.aspect();
-        log(&format!("main: the HUD is constrained to aspect {aspect:.4}"));
         report("hud (movies)", fixes::hud::center_movies(&module, aspect));
         report("hud (mouse)", fixes::hud::follow_mouse(&module));
         report("hud (text scale)", fixes::hud::follow_text_scale(&module));

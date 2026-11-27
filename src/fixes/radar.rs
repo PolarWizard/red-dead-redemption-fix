@@ -1,7 +1,7 @@
 //! The minimap ring, which the engine draws outside the Flash player.
 
 use super::WIDER_BY;
-use crate::utils::{ModuleInfo, SignatureHook, find, hook_at, log, log_error, read, rip_target};
+use crate::utils::{ModuleInfo, SignatureHook, find, hook_at, log_error, read, rip_target};
 
 /// Moves the minimap ring from the left edge of the screen into the centered
 /// region of `aspect`.
@@ -55,7 +55,6 @@ pub fn center_radar(module: &ModuleInfo, aspect: f32) -> bool {
         log_error(&format!("hud_radar : margin factor {factor} is not a fraction of the screen; not hooked"));
         return false;
     }
-    log(&format!("hud_radar : margin factor {factor}"));
 
     hook_at(module, site.tag, hit + AFTER_MARGIN_MULTIPLY, move |ctx| {
         let margin = ctx.xmm15.f32()[0];

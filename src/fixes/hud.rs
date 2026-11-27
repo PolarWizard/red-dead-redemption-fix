@@ -4,13 +4,13 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use grapnel::Context;
 
 use super::{ASPECT_16_9, WIDER_BY};
 use crate::utils::{
-    ModuleInfo, SignatureHook, detour_at, find, hook_at, log, log_error, log_warn, read, readable, rip_target, write,
+    ModuleInfo, SignatureHook, detour_at, find, hook_at, log_error, log_warn, read, readable, rip_target, write,
 };
 
 /// Movies that keep the full screen. Every other movie with a 16:9 stage is
@@ -63,8 +63,6 @@ struct Current {
     /// `this` of `FUN_140114d80`, `FUN_140115660` or `FUN_1401157d0`; 0
     /// outside all three.
     wrapper: usize,
-    /// The wrapper's definition, the key of [`MOVIES`].
-    definition: usize,
     /// Whether the movie is not on [`FULL_SCREEN_MOVIES`].
     centered: bool,
     /// Where [`place_movie`] put the movie, while its display list is walked.
@@ -72,7 +70,7 @@ struct Current {
 }
 
 impl Current {
-    const NONE: Self = Self { wrapper: 0, definition: 0, centered: false, layout: None };
+    const NONE: Self = Self { wrapper: 0, centered: false, layout: None };
 }
 
 /// A centered movie's placement, kept while its display list is walked.
@@ -91,10 +89,7 @@ thread_local! {
 /// A movie [`classify`] has seen, keyed by its definition.
 struct Movie {
     definition: usize,
-    name: String,
     centered: bool,
-    /// Whether [`note_first_draw`] has logged it.
-    drawn: bool,
 }
 
 static MOVIES: Mutex<Vec<Movie>> = Mutex::new(Vec::new());
@@ -113,8 +108,6 @@ static DRAW: AtomicUsize = AtomicUsize::new(0);
 /// `FUN_140ec7e90(context, rect)`, the render context's scissor setter; 0
 /// when its signature was not found and movies are not clipped.
 static SET_SCISSOR: AtomicUsize = AtomicUsize::new(0);
-
-static ASPECT_OUTSIDE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 type LoadFn = unsafe extern "system" fn(usize, u32) -> u64;
 type WrapperFn = unsafe extern "system" fn(usize);
@@ -258,13 +251,6 @@ pub fn center_movies(module: &ModuleInfo, aspect: f32) -> bool {
     // The two MOVSS [rip+disp32],XMM1 stores name the scale globals.
     let scale_x = rip_target(place + SCALE_X_STORE, 4, 8);
     let scale_y = rip_target(place + SCALE_Y_STORE, 4, 8);
-    log(&format!(
-        "movie_place : scale globals @ {}+{:x} (x), {}+{:x} (y)",
-        module.name,
-        module.rva(scale_x),
-        module.name,
-        module.rva(scale_y)
-    ));
 
     if !hook_at(module, "movie_place", place + AFTER_ROOT_CONTEXT, move |ctx| place_movie(ctx, scale_x, scale_y, aspect)) {
         return false;
@@ -485,7 +471,6 @@ fn place_movie(ctx: &mut Context, scale_x: usize, scale_y: usize, aspect: f32) {
         let layout = Layout { shift: placement.shift, scissor: clip_to_region(placement.left, placement.width) };
         CURRENT.with(|c| c.set(Current { layout: Some(layout), ..current }));
     }
-    note_first_draw(current.definition, stage, viewport, placement.as_ref());
 }
 
 /// Narrows the render context's scissor to the pixels `left..left + width`,
@@ -540,12 +525,6 @@ fn render_context() -> Option<usize> {
 /// `fs_AspectRatio`.
 fn clamp_aspect(ctx: &mut Context, region: f32) {
     let current = CURRENT.with(|c| c.get());
-    if current.wrapper == 0 {
-        if !ASPECT_OUTSIDE_LOGGED.swap(true, Ordering::Relaxed) {
-            log_warn("movie_aspect : a movie asked for the aspect ratio outside a movie load, update or draw; it got the screen's");
-        }
-        return;
-    }
     if !current.centered || !stage_is_16_9(current.wrapper) {
         return;
     }
@@ -635,8 +614,7 @@ fn stage_is_16_9(wrapper: usize) -> bool {
     width > 0.0 && height > 0.0 && is_16_9(width, height)
 }
 
-/// Identifies the movie `wrapper` belongs to, reading and logging each movie
-/// once.
+/// Identifies the movie `wrapper` belongs to, reading each movie's name once.
 fn classify(wrapper: usize) -> Current {
     let unknown = Current { wrapper, ..Current::NONE };
     let definition = unsafe { read::<usize>(wrapper + WRAPPER_DEFINITION) };
@@ -647,18 +625,12 @@ fn classify(wrapper: usize) -> Current {
     let centered = match movies.iter().find(|movie| movie.definition == definition) {
         Some(movie) => movie.centered,
         None => {
-            let name = read_name(definition + DEFINITION_NAME);
-            let centered = name.as_deref().is_some_and(|name| !keeps_full_screen(name));
-            match &name {
-                Some(name) if centered => log(&format!("movies: '{name}' is centered")),
-                Some(name) => log(&format!("movies: '{name}' keeps the full screen")),
-                None => log_warn(&format!("movies: definition {definition:#x} has no readable name; it keeps the full screen")),
-            }
-            movies.push(Movie { definition, name: name.unwrap_or_default(), centered, drawn: false });
+            let centered = read_name(definition + DEFINITION_NAME).is_some_and(|name| !keeps_full_screen(&name));
+            movies.push(Movie { definition, centered });
             centered
         }
     };
-    Current { wrapper, definition, centered, ..Current::NONE }
+    Current { wrapper, centered, ..Current::NONE }
 }
 
 /// The NUL-terminated ASCII name at `address`, if those bytes are readable
@@ -677,26 +649,4 @@ fn read_name(address: usize) -> Option<String> {
 fn keeps_full_screen(name: &str) -> bool {
     let base = name.strip_suffix("_z").or_else(|| name.strip_suffix("_Z")).unwrap_or(name);
     FULL_SCREEN_MOVIES.iter().any(|movie| base.eq_ignore_ascii_case(movie))
-}
-
-/// Logs a movie's stage, viewport and placement the first time it is drawn.
-fn note_first_draw(definition: usize, stage: (f32, f32), viewport: (f32, f32), placement: Option<&Placement>) {
-    let Ok(mut movies) = MOVIES.lock() else { return };
-    let Some(movie) = movies.iter_mut().find(|movie| movie.definition == definition) else { return };
-    if movie.drawn {
-        return;
-    }
-    movie.drawn = true;
-    let line = format!(
-        "movies: '{}' first drawn: stage {}x{}, viewport {}x{}",
-        movie.name, stage.0, stage.1, viewport.0, viewport.1
-    );
-    match placement {
-        Some(p) => log(&format!("{line}, centered at x {:.0}..{:.0}", p.left, p.left + p.width)),
-        None if movie.centered && !is_16_9(stage.0, stage.1) => {
-            log_warn(&format!("{line}; its stage is not 16:9, so it keeps the full screen"))
-        }
-        None if movie.centered => log(&format!("{line}; the viewport is not wider than the region, nothing to center")),
-        None => log(&format!("{line}, full screen")),
-    }
 }
